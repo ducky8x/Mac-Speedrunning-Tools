@@ -742,31 +742,33 @@ struct BetterPiechartToolView: View {
                 Label(state.primaryToggleTitle, systemImage: state.isLive ? "stop.fill" : "play.fill")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .buttonStyle(PrimaryMonoButtonStyle(active: state.isLive))
 
             ToolKeybindSection(section: .piechart)
 
-            Toggle("Better Piechart Projector Always On Top", isOn: Binding(
-                get: { state.projectorAlwaysOnTop },
-                set: { state.setProjectorAlwaysOnTop($0) }
-            ))
-
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle("Show Titlebar", isOn: Binding(
-                    get: { state.projectorShowTitlebar },
-                    set: { state.setProjectorShowTitlebar($0) }
+            SectionBox(title: "Projector") {
+                Toggle("Better Piechart Projector Always On Top", isOn: Binding(
+                    get: { state.projectorAlwaysOnTop },
+                    set: { state.setProjectorAlwaysOnTop($0) }
                 ))
 
-                Text("Turn this on to move and position the projector.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Show Titlebar", isOn: Binding(
+                        get: { state.projectorShowTitlebar },
+                        set: { state.setProjectorShowTitlebar($0) }
+                    ))
+
+                    Text("Turn this on to move and position the projector.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            VStack(alignment: .leading, spacing: 8) {
+            SectionBox(title: "Pie Area") {
                 HStack {
-                    Text("Pie Area")
-                        .font(.headline)
+                    Text(state.pieRegion?.label ?? "No pie area selected yet.")
+                        .font(.system(.body, design: state.pieRegion == nil ? .default : .monospaced))
+                        .foregroundStyle(.secondary)
                     Spacer()
                     Button("Select Pie") {
                         state.selectPieRegion()
@@ -776,24 +778,10 @@ struct BetterPiechartToolView: View {
                     }
                     .disabled(state.pieRegion == nil)
                 }
-
-                if let region = state.pieRegion {
-                    Text(region.label)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("No pie area selected yet.")
-                        .foregroundStyle(.secondary)
-                }
+                .buttonStyle(.bordered)
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Projector Fit")
-                        .font(.headline)
-                    Spacer()
-                }
-
+            SectionBox(title: "Projector Fit") {
                 HStack {
                     Text("Template Height")
                         .font(.headline)
@@ -815,9 +803,7 @@ struct BetterPiechartToolView: View {
                 Text("This is the ellipse guide height relative to its width. Match it to the flattened in-game pie first.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
 
-            VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Crop Size")
                         .font(.headline)
@@ -839,9 +825,7 @@ struct BetterPiechartToolView: View {
                 Text("Smaller values crop tighter around the center of the selected pie area, then scale the result back up.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
 
-            VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Circle Fit")
                         .font(.headline)
@@ -865,18 +849,20 @@ struct BetterPiechartToolView: View {
                     .foregroundStyle(.secondary)
             }
 
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Raw Capture")
-                    .font(.headline)
-                CapturePreviewCard(image: state.rawPreview, templateHeightRatio: state.templateHeightRatio)
-                    .frame(height: 160)
-            }
+            SectionBox(title: "Previews") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Raw Capture")
+                        .font(.headline)
+                    CapturePreviewCard(image: state.rawPreview, templateHeightRatio: state.templateHeightRatio)
+                        .frame(height: 160)
+                }
 
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Corrected Pie")
-                    .font(.headline)
-                CorrectedPiePreviewCard(image: state.correctedPreview)
-                    .frame(height: 180)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Corrected Pie")
+                        .font(.headline)
+                    CorrectedPiePreviewCard(image: state.correctedPreview)
+                        .frame(height: 180)
+                }
             }
 
             Text(state.statusText)
@@ -884,8 +870,7 @@ struct BetterPiechartToolView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(18)
-        .frame(width: 460)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

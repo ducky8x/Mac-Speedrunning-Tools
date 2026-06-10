@@ -385,6 +385,7 @@ struct SectionBox<Content: View>: View {
         .padding(16)
         .background(Color.black)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.28)))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
