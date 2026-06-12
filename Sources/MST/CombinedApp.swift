@@ -48,6 +48,7 @@ enum ToolSection: String, CaseIterable, Identifiable {
     case nbb = "BetterNBB"
     case backdrop = "WindowBackdrop"
     case piechart = "Better Piechart"
+    case piechartBeta = "BetterPiechart^2 (Beta)"
     case crosshair = "MACrosshair"
 
     var id: Self { self }
@@ -58,6 +59,7 @@ enum ToolSection: String, CaseIterable, Identifiable {
         case .nbb: "map"
         case .backdrop: "macwindow"
         case .piechart: "chart.pie"
+        case .piechartBeta: "sparkle.magnifyingglass"
         case .crosshair: "scope"
         }
     }
@@ -72,6 +74,8 @@ enum ToolSection: String, CaseIterable, Identifiable {
             "A backdrop that goes behind your Minecraft instance."
         case .piechart:
             "A piechart overlay that makes the piechart round. :)"
+        case .piechartBeta:
+            "A beta piechart projector that finds the F3 pie from the Minecraft window."
         case .crosshair:
             "Draws a crosshair on the screen."
         }
@@ -88,6 +92,7 @@ final class ToolHub: ObservableObject {
     @Published var nbb = BetterNBBToolController()
     @Published var backdrop = WindowBackdropState()
     @Published var piechart = PiechartState()
+    @Published var piechartBeta = PiechartBetaState()
     @Published var crosshair = MacrosshairController()
     @Published var keybinds = ToolKeybindStore()
 
@@ -102,6 +107,7 @@ final class ToolHub: ObservableObject {
             nbb.objectWillChange.eraseToAnyPublisher(),
             backdrop.objectWillChange.eraseToAnyPublisher(),
             piechart.objectWillChange.eraseToAnyPublisher(),
+            piechartBeta.objectWillChange.eraseToAnyPublisher(),
             crosshair.objectWillChange.eraseToAnyPublisher(),
             keybinds.objectWillChange.eraseToAnyPublisher()
         ] {
@@ -121,6 +127,7 @@ final class ToolHub: ObservableObject {
         case .nbb: nbb.isEnabled
         case .backdrop: backdrop.isBackdropEnabled
         case .piechart: piechart.isLive
+        case .piechartBeta: piechartBeta.isLive
         case .crosshair: crosshair.isEnabled
         }
     }
@@ -135,6 +142,8 @@ final class ToolHub: ObservableObject {
             backdrop.startOrStopBackdrop()
         case .piechart:
             piechart.toggleProjector()
+        case .piechartBeta:
+            piechartBeta.toggle()
         case .crosshair:
             crosshair.toggleTool()
         }
@@ -150,6 +159,8 @@ final class ToolHub: ObservableObject {
             backdrop.toggleBackdropVisibility()
         case .piechart:
             piechart.toggleProjectorVisibility()
+        case .piechartBeta:
+            piechartBeta.toggleProjectorVisibility()
         case .crosshair:
             crosshair.toggleVisibility()
         }
@@ -230,6 +241,11 @@ final class SetupAssistantController: ObservableObject {
             id: "better-piechart",
             section: .piechart,
             bodyText: "Better Piechart: set a keybind, select the pie area, start the simulation, press the hotkey to show the projector, then adjust Projector Fit until the pie is round."
+        ),
+        SetupAssistantStep(
+            id: "better-piechart-beta",
+            section: .piechartBeta,
+            bodyText: "BetterPiechart^2 (Beta): refresh Minecraft windows, pick the instance, then start the beta capture so it can find and round the pie automatically."
         ),
         SetupAssistantStep(
             id: "macrosshair",
@@ -419,6 +435,8 @@ struct ComplexModeView: View {
                     WindowBackdropSettingsView(state: hub.backdrop)
                 case .piechart:
                     BetterPiechartToolView(state: hub.piechart)
+                case .piechartBeta:
+                    BetterPiechartBetaToolView(state: hub.piechartBeta)
                 case .crosshair:
                     MacrosshairSettingsView(controller: hub.crosshair)
                 }
@@ -433,7 +451,7 @@ struct ComplexModeView: View {
 struct SimpleModeView: View {
     @EnvironmentObject private var hub: ToolHub
 
-    private let buttons: [ToolSection] = [.nbb, .backdrop, .piechart, .crosshair, .overview]
+    private let buttons: [ToolSection] = [.nbb, .backdrop, .piechart, .piechartBeta, .crosshair, .overview]
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 14), count: 2)
 
     var body: some View {
