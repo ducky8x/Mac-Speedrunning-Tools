@@ -1510,6 +1510,7 @@ struct KeyRebinderSettingsView: View {
                 Image(systemName: controller.karabinerStatus.isConnected ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(controller.karabinerStatus.isConnected ? Color.green : Color.yellow)
+                    .modifier(MSTPreserveSemanticColor())
                     .frame(width: 30)
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -1986,6 +1987,7 @@ struct KeyRebinderSettingsView: View {
         Text(controller.status)
             .font(.system(size: 13, weight: .bold))
             .foregroundStyle(controller.status == "Rebinds updated" ? Color.green : Color.yellow)
+            .modifier(MSTPreserveSemanticColor())
     }
 }
 
@@ -1997,6 +1999,7 @@ struct KarabinerCheck: View {
         HStack(spacing: 7) {
             Image(systemName: isOK ? "checkmark.circle.fill" : "circle")
                 .foregroundStyle(isOK ? Color.green : Color.secondary)
+                .modifier(MSTPreserveSemanticColor())
             Text(label)
                 .font(.system(size: 12, weight: .semibold))
         }

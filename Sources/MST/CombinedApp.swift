@@ -275,6 +275,10 @@ struct RootView: View {
     @Environment(\.colorScheme) private var systemColorScheme
     @StateObject private var setupAssistant = SetupAssistantController()
 
+    private var isColorInverted: Bool {
+        hub.appSettings.appearanceMode.shouldInvert(systemColorScheme: systemColorScheme)
+    }
+
     var body: some View {
         Group {
             if hub.simpleMode {
@@ -283,9 +287,11 @@ struct RootView: View {
                 ComplexModeView()
             }
         }
-        .background(Color.black)
+        .background(Color.black.ignoresSafeArea())
+        .background(MSTWindowAppearanceBridge(inverted: isColorInverted))
         .foregroundStyle(Color.white)
-        .tint(.white)
+        .tint(isColorInverted ? .black : .white)
+        .environment(\.mstColorInversionEnabled, isColorInverted)
         .overlay(alignment: .topTrailing) {
             if setupAssistant.isPresented {
                 SetupAssistantPopup(
@@ -303,7 +309,7 @@ struct RootView: View {
             hub.simpleMode = false
             hub.selection = .overview
         }
-        .modifier(MSTColorInvertModifier(enabled: hub.appSettings.appearanceMode.shouldInvert(systemColorScheme: systemColorScheme)))
+        .modifier(MSTColorInvertModifier(enabled: isColorInverted))
     }
 
     private func advanceSetupAssistant() {
@@ -328,6 +334,56 @@ struct MSTColorInvertModifier: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+private struct MSTColorInversionEnabledKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var mstColorInversionEnabled: Bool {
+        get { self[MSTColorInversionEnabledKey.self] }
+        set { self[MSTColorInversionEnabledKey.self] = newValue }
+    }
+}
+
+struct MSTPreserveSemanticColor: ViewModifier {
+    @Environment(\.mstColorInversionEnabled) private var isColorInverted
+
+    func body(content: Content) -> some View {
+        content.modifier(MSTColorInvertModifier(enabled: isColorInverted))
+    }
+}
+
+struct MSTWindowAppearanceBridge: NSViewRepresentable {
+    let inverted: Bool
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            configure(window: view.window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            configure(window: nsView.window)
+        }
+    }
+
+    private func configure(window: NSWindow?) {
+        guard let window else { return }
+        let background = inverted ? NSColor.white : NSColor.black
+        window.appearance = NSAppearance(named: inverted ? .aqua : .darkAqua)
+        window.backgroundColor = background
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.backgroundColor = background.cgColor
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.styleMask.insert(.fullSizeContentView)
+        window.isMovableByWindowBackground = true
     }
 }
 
@@ -451,6 +507,7 @@ struct SetupAssistantPopup: View {
                     .font(.system(size: 13, weight: .black))
                     .underline()
                     .foregroundStyle(Color.red)
+                    .modifier(MSTPreserveSemanticColor())
                     .fixedSize(horizontal: false, vertical: true)
             }
 

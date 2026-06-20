@@ -368,8 +368,14 @@ struct MacrosshairSettingsView: View {
 
             SectionBox(title: "Offset") {
                 HStack {
-                    TextField("X", value: Binding(get: { Double(settings.offsetX) }, set: { settings.offsetX = CGFloat($0) }), format: .number)
-                    TextField("Y", value: Binding(get: { Double(settings.offsetY) }, set: { settings.offsetY = CGFloat($0) }), format: .number)
+                    OffsetField(
+                        placeholder: "X",
+                        value: Binding(get: { Double(settings.offsetX) }, set: { settings.offsetX = CGFloat($0) })
+                    )
+                    OffsetField(
+                        placeholder: "Y",
+                        value: Binding(get: { Double(settings.offsetY) }, set: { settings.offsetY = CGFloat($0) })
+                    )
                     Button("Reset") {
                         settings.offsetX = 0
                         settings.offsetY = 0
@@ -381,6 +387,26 @@ struct MacrosshairSettingsView: View {
 
     private var colorPresets: [(name: String, color: NSColor)] {
         [("Red", .red), ("Green", .green), ("White", .white), ("Yellow", .yellow), ("Cyan", .cyan)]
+    }
+}
+
+struct OffsetField: View {
+    let placeholder: String
+    @Binding var value: Double
+
+    var body: some View {
+        TextField(placeholder, value: $value, format: .number)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13, weight: .bold, design: .monospaced))
+            .foregroundStyle(Color.white)
+            .tint(.white)
+            .padding(.vertical, 5)
+            .padding(.horizontal, 8)
+            .frame(minWidth: 90)
+            .background(Color.black)
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.white.opacity(0.28), lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .modifier(MSTPreserveSemanticColor())
     }
 }
 
@@ -408,6 +434,7 @@ struct SliderRow: View {
             Text(title)
                 .frame(width: 130, alignment: .leading)
             Slider(value: $value, in: range)
+                .modifier(MSTPreserveSemanticColor())
             Text(label)
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(.secondary)
