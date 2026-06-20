@@ -190,6 +190,8 @@ final class PiechartBetaState: ObservableObject {
     private let sampleQueue = DispatchQueue(label: "MST.BetterPiechartBeta.SampleQueue")
     private var captureScale = 1.0
     private var lastDetectionTime = CFAbsoluteTimeGetCurrent()
+    private var lastPreviewUpdateTime: CFAbsoluteTime = 0
+    private var lastStatusUpdateTime: CFAbsoluteTime = 0
     private var pendingCaptureRestart: Task<Void, Never>?
     private var lastThinModeMatch = false
     private var projectorFrame: CGRect?
@@ -237,7 +239,7 @@ final class PiechartBetaState: ObservableObject {
     }
 
     func setProjectorFPS(_ value: Double) {
-        projectorFPS = value.rounded()
+        projectorFPS = Self.clampedProjectorFPS(value)
         persistSettings()
         restartCaptureSoon()
     }
@@ -266,24 +268,24 @@ final class PiechartBetaState: ObservableObject {
     }
 
     func setEntityCounterYOffset(_ value: Double) {
-        entityCounterYOffset = value.rounded()
+        entityCounterYOffset = min(90, max(20, value.rounded()))
         persistSettings()
     }
 
     func updateTemplateHeightScale(_ value: Double) {
-        templateHeightScale = value
+        templateHeightScale = min(1.80, max(0.60, value))
         persistSettings()
         refreshFromCurrentPreview()
     }
 
     func updateCropSizeScale(_ value: Double) {
-        cropSizeScale = value
+        cropSizeScale = min(2.20, max(0.80, value))
         persistSettings()
         refreshFromCurrentPreview()
     }
 
     func updateStretchMultiplierScale(_ value: Double) {
-        stretchMultiplierScale = value
+        stretchMultiplierScale = min(1.45, max(0.70, value))
         persistSettings()
         refreshFromCurrentPreview()
     }
@@ -347,12 +349,10 @@ final class PiechartBetaState: ObservableObject {
 
             shareableWindows = minecraftWindows
             availableWindows = minecraftWindows.map { window in
-                let width = Int(window.frame.width.rounded())
-                let height = Int(window.frame.height.rounded())
                 return PiechartBetaWindowCandidate(
                     id: window.windowID,
                     displayName: Self.displayName(for: window),
-                    sizeDescription: "\(width) x \(height)"
+                    sizeDescription: Self.sizeDescription(for: window)
                 )
             }
 
@@ -395,6 +395,8 @@ final class PiechartBetaState: ObservableObject {
 
         isLive = true
         lastThinModeMatch = false
+        lastPreviewUpdateTime = 0
+        lastStatusUpdateTime = 0
         projector.show(
             model: projectorModel,
             alwaysOnTop: projectorAlwaysOnTop,
@@ -418,6 +420,8 @@ final class PiechartBetaState: ObservableObject {
         rawPiePreview = nil
         correctedPreview = nil
         entityCounterPreview = nil
+        lastPreviewUpdateTime = 0
+        lastStatusUpdateTime = 0
         pendingCaptureRestart?.cancel()
         pendingCaptureRestart = nil
         statusText = "Stopped."
@@ -437,6 +441,13 @@ final class PiechartBetaState: ObservableObject {
             projector.setVisible(false)
             statusText = "No Minecraft window selected."
             return
+        }
+
+        if selectedWindowID != window.windowID {
+            selectedWindowID = window.windowID
+            selectedWindowDisplayName = Self.displayName(for: window)
+            selectedWindowSizeDescription = Self.sizeDescription(for: window)
+            persistSettings()
         }
 
         await stopCapture()
@@ -553,23 +564,32 @@ final class PiechartBetaState: ObservableObject {
         }
 
         lastDetectionTime = CFAbsoluteTimeGetCurrent()
-        rawPiePreview = detection.rawCrop
-        correctedPreview = detection.correctedImage
-        entityCounterPreview = detection.entityCounterImage
         projectorModel.correctedImage = detection.correctedImage
         projectorModel.entityCounterImage = detection.entityCounterImage
         applyProjectorVisibility()
-        detectionText = String(
-            format: "Thin crop %.0f, %.0f  %.0f x %.0f | template %.2fx | crop %.2fx | fit %.2fx",
-            detection.cropRect.minX,
-            detection.cropRect.minY,
-            detection.cropRect.width,
-            detection.cropRect.height,
-            templateHeightScale,
-            cropSizeScale,
-            stretchMultiplierScale
-        )
-        statusText = "Thin mode detected. Projector is open."
+
+        let now = CFAbsoluteTimeGetCurrent()
+        if now - lastPreviewUpdateTime >= (1.0 / 15.0) {
+            lastPreviewUpdateTime = now
+            rawPiePreview = detection.rawCrop
+            correctedPreview = detection.correctedImage
+            entityCounterPreview = detection.entityCounterImage
+        }
+
+        if now - lastStatusUpdateTime >= 0.25 {
+            lastStatusUpdateTime = now
+            detectionText = String(
+                format: "Thin crop %.0f, %.0f  %.0f x %.0f | template %.2fx | crop %.2fx | fit %.2fx",
+                detection.cropRect.minX,
+                detection.cropRect.minY,
+                detection.cropRect.width,
+                detection.cropRect.height,
+                templateHeightScale,
+                cropSizeScale,
+                stretchMultiplierScale
+            )
+            statusText = "Thin mode detected. Projector is open."
+        }
     }
 
     private func refreshFromCurrentPreview() {
@@ -627,16 +647,16 @@ final class PiechartBetaState: ObservableObject {
 
         projectorAlwaysOnTop = settings.projectorAlwaysOnTop
         projectorShowTitlebar = settings.projectorShowTitlebar
-        projectorFPS = settings.projectorFPS
+        projectorFPS = Self.clampedProjectorFPS(settings.projectorFPS)
         projectorFrame = settings.projectorFrame?.cgRect
         selectedWindowDisplayName = settings.selectedWindowDisplayName
         selectedWindowSizeDescription = settings.selectedWindowSizeDescription
         thinWidth = settings.thinWidth
         thinHeight = settings.thinHeight
-        entityCounterYOffset = settings.entityCounterYOffset
-        templateHeightScale = settings.templateHeightScale
-        cropSizeScale = settings.cropSizeScale
-        stretchMultiplierScale = settings.stretchMultiplierScale
+        entityCounterYOffset = min(90, max(20, settings.entityCounterYOffset))
+        templateHeightScale = min(1.80, max(0.60, settings.templateHeightScale))
+        cropSizeScale = min(2.20, max(0.80, settings.cropSizeScale))
+        stretchMultiplierScale = min(1.45, max(0.70, settings.stretchMultiplierScale))
         templateCenterNormalized = Self.clampedNormalizedPoint(
             CGPoint(x: settings.templateCenterX, y: settings.templateCenterY)
         )
@@ -687,6 +707,16 @@ final class PiechartBetaState: ObservableObject {
             .filter { !$0.isEmpty }
             .joined(separator: " - ")
         return joined.isEmpty ? "Window \(window.windowID)" : joined
+    }
+
+    private static func sizeDescription(for window: SCWindow) -> String {
+        let width = Int(window.frame.width.rounded())
+        let height = Int(window.frame.height.rounded())
+        return "\(width) x \(height)"
+    }
+
+    private static func clampedProjectorFPS(_ value: Double) -> Double {
+        min(120, max(10, value.rounded()))
     }
 
     private static func isMinecraftWindow(_ window: SCWindow) -> Bool {
