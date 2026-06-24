@@ -80,6 +80,7 @@ struct KarabinerSimpleModificationGroup: Identifiable, Equatable {
     var isKeyboard: Bool
     var isMouse: Bool
     var mappings: [RebindMapping]
+    var grabbedMappings: [RebindMapping]
 
     var isAllKeyboardsScope: Bool {
         isKeyboard && !isMouse && vendorID == nil && productID == nil
@@ -164,8 +165,19 @@ private struct KeyRebinderPersistedState: Codable {
 
 @MainActor
 final class KeyRebinderController: ObservableObject {
+    private typealias CGCursorIsVisibleFunction = @convention(c) () -> Int32
+
     private static let settingsKey = "macSpeedrunningTools.keyRebinder.settings.v1"
     private static let generatedRulePrefix = "MST Key Rebinder:"
+    private static let grabbedLayerRulePrefix = "MST Key Rebinder Grabbed Layer:"
+    private static let grabbedLayerVariableName = "mst_cursor_grabbed"
+    private static let coreGraphicsHandle = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_NOW)
+    private static let cursorVisibilityFunction: CGCursorIsVisibleFunction? = {
+        guard let coreGraphicsHandle,
+              let symbol = dlsym(coreGraphicsHandle, "CGCursorIsVisible")
+        else { return nil }
+        return unsafeBitCast(symbol, to: CGCursorIsVisibleFunction.self)
+    }()
 
     @Published var presets: [RebindPreset] = []
     @Published var selectedPresetID: UUID?
@@ -205,6 +217,11 @@ final class KeyRebinderController: ObservableObject {
     private var lastObservedKarabinerModificationDate: Date?
     private var lastObservedKarabinerProfileName: String?
     private var karabinerPollCount = 0
+    private var cursorGrabPollTimer: Timer?
+    private var lastPublishedCursorGrabbed: Bool?
+    private var cursorGrabLikely = false
+    private var lastMouseEventLocation: CGPoint?
+    private var pinnedHiddenMouseMoveCount = 0
 
     var isEnabled: Bool { presets.contains { $0.isEnabled } }
 
@@ -242,6 +259,7 @@ final class KeyRebinderController: ObservableObject {
         installMonitors()
         installEventTap()
         startKarabinerPolling()
+        startCursorGrabPolling()
     }
 
     func toggleSelectedPreset() {
@@ -621,6 +639,33 @@ final class KeyRebinderController: ObservableObject {
         }
     }
 
+    func setKarabinerGrabbedModification(groupID: String, from: RebindEndpoint, to: RebindEndpoint) {
+        do {
+            try mutateKarabinerGrabbedModifications(groupID: groupID) { mappings in
+                mappings.removeAll { $0.from == from }
+                if from != to {
+                    mappings.append(RebindMapping(from: from, to: to))
+                }
+            }
+            status = "Rebinds updated"
+            refreshKarabinerConfiguration()
+        } catch {
+            status = "Rebinds failed to update. Check your connection with Karabiner Elements and try again."
+        }
+    }
+
+    func deleteKarabinerGrabbedModification(groupID: String, from: RebindEndpoint) {
+        do {
+            try mutateKarabinerGrabbedModifications(groupID: groupID) { mappings in
+                mappings.removeAll { $0.from == from }
+            }
+            status = "Rebinds updated"
+            refreshKarabinerConfiguration()
+        } catch {
+            status = "Rebinds failed to update. Check your connection with Karabiner Elements and try again."
+        }
+    }
+
     func deleteKarabinerSimpleModification(groupID: String, index: Int) {
         do {
             try mutateKarabinerSimpleModifications(groupID: groupID) { modifications in
@@ -690,6 +735,91 @@ final class KeyRebinderController: ObservableObject {
         }
     }
 
+    private func startCursorGrabPolling() {
+        publishCursorGrabStateIfNeeded(force: true)
+        cursorGrabPollTimer?.invalidate()
+        cursorGrabPollTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 240.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.publishCursorGrabStateIfNeeded()
+            }
+        }
+        if let cursorGrabPollTimer {
+            RunLoop.main.add(cursorGrabPollTimer, forMode: .common)
+        }
+    }
+
+    private func publishCursorGrabStateIfNeeded(force: Bool = false) {
+        guard let isCursorVisible = Self.cursorIsVisible() else { return }
+        if isCursorVisible {
+            resetCursorGrabHeuristic()
+        }
+        let isCursorGrabbed = !isCursorVisible && cursorGrabLikely
+        guard force || lastPublishedCursorGrabbed != isCursorGrabbed else { return }
+        guard setKarabinerVariable(name: Self.grabbedLayerVariableName, value: isCursorGrabbed) else { return }
+        lastPublishedCursorGrabbed = isCursorGrabbed
+    }
+
+    private func resetCursorGrabHeuristic() {
+        cursorGrabLikely = false
+        pinnedHiddenMouseMoveCount = 0
+        lastMouseEventLocation = nil
+    }
+
+    private func observeMouseMotion(_ event: CGEvent) {
+        guard let isCursorVisible = Self.cursorIsVisible() else { return }
+        let location = event.location
+        defer {
+            lastMouseEventLocation = location
+            publishCursorGrabStateIfNeeded()
+        }
+
+        guard !isCursorVisible else {
+            resetCursorGrabHeuristic()
+            return
+        }
+
+        let deltaX = event.getIntegerValueField(.mouseEventDeltaX)
+        let deltaY = event.getIntegerValueField(.mouseEventDeltaY)
+        guard deltaX != 0 || deltaY != 0 else { return }
+
+        guard let previousLocation = lastMouseEventLocation else { return }
+        let distance = hypot(location.x - previousLocation.x, location.y - previousLocation.y)
+        if distance <= 2.0 {
+            pinnedHiddenMouseMoveCount += 1
+            if pinnedHiddenMouseMoveCount >= 1 {
+                cursorGrabLikely = true
+            }
+        } else {
+            cursorGrabLikely = false
+            pinnedHiddenMouseMoveCount = 0
+        }
+    }
+
+    private static func cursorIsVisible() -> Bool? {
+        cursorVisibilityFunction?() != 0
+    }
+
+    private func setKarabinerVariable(name: String, value: Bool) -> Bool {
+        let cliURL = URL(fileURLWithPath: "/Library/Application Support/org.pqrs/Karabiner-Elements/bin/karabiner_cli")
+        guard FileManager.default.fileExists(atPath: cliURL.path),
+              let data = try? JSONSerialization.data(withJSONObject: [name: value]),
+              let json = String(data: data, encoding: .utf8)
+        else { return false }
+
+        let process = Process()
+        process.executableURL = cliURL
+        process.arguments = ["--set-variables", json]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
     private func pollKarabinerChanges() {
         karabinerPollCount += 1
         let fileManager = FileManager.default
@@ -739,7 +869,10 @@ final class KeyRebinderController: ObservableObject {
     }
 
     private func installEventTap() {
-        let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
+        let eventTypes: [CGEventType] = [.keyDown, .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        let mask = eventTypes.reduce(CGEventMask(0)) { result, eventType in
+            result | CGEventMask(1 << eventType.rawValue)
+        }
         let userData = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -747,13 +880,17 @@ final class KeyRebinderController: ObservableObject {
             options: .listenOnly,
             eventsOfInterest: mask,
             callback: { _, type, event, userData in
-                guard type == .keyDown, let userData else {
+                guard let userData else {
                     return Unmanaged.passUnretained(event)
                 }
                 let keyEvent = event.copy() ?? event
                 Task { @MainActor in
                     let controller = Unmanaged<KeyRebinderController>.fromOpaque(userData).takeUnretainedValue()
-                    controller.handle(keyEvent)
+                    if type == .keyDown {
+                        controller.handle(keyEvent)
+                    } else if type == .mouseMoved || type == .leftMouseDragged || type == .rightMouseDragged || type == .otherMouseDragged {
+                        controller.observeMouseMotion(keyEvent)
+                    }
                 }
                 return Unmanaged.passUnretained(event)
             },
@@ -773,6 +910,8 @@ final class KeyRebinderController: ObservableObject {
     }
 
     private func handle(_ event: NSEvent) -> Bool {
+        publishCursorGrabStateIfNeeded()
+
         if let recordingProfileName {
             guard !event.isARepeat else { return false }
             if let shortcut = ToolShortcut.from(event: event) {
@@ -800,6 +939,8 @@ final class KeyRebinderController: ObservableObject {
     }
 
     private func handle(_ event: CGEvent) {
+        publishCursorGrabStateIfNeeded()
+
         guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { return }
         for (profileName, shortcut) in profileShortcuts where shortcut.matches(event) {
             triggerProfile(profileName)
@@ -935,6 +1076,7 @@ final class KeyRebinderController: ObservableObject {
 
         var groups: [KarabinerSimpleModificationGroup] = []
         let profileLevelMods = currentProfile["simple_modifications"] as? [[String: Any]] ?? []
+        let grabbedMappingsByScope = grabbedLayerMappingsByScope(from: currentProfile)
         groups.append(KarabinerSimpleModificationGroup(
             id: "\(currentName):profile",
             title: "For all devices",
@@ -943,7 +1085,8 @@ final class KeyRebinderController: ObservableObject {
             productID: nil,
             isKeyboard: true,
             isMouse: true,
-            mappings: mappings(from: profileLevelMods)
+            mappings: mappings(from: profileLevelMods),
+            grabbedMappings: grabbedMappingsByScope["profile"] ?? []
         ))
 
         let devices = currentProfile["devices"] as? [[String: Any]] ?? []
@@ -966,7 +1109,8 @@ final class KeyRebinderController: ObservableObject {
                 productID: intValue(identifiers["product_id"]),
                 isKeyboard: isKeyboard,
                 isMouse: isMouse,
-                mappings: mappings(from: mods)
+                mappings: mappings(from: mods),
+                grabbedMappings: grabbedMappingsByScope[layerScopeKey(for: identifiers)] ?? []
             ))
         }
 
@@ -1095,6 +1239,43 @@ final class KeyRebinderController: ObservableObject {
             profile["devices"] = devices
         }
 
+        try Self.rebuildGrabbedLayerRule(for: groupID, in: &profile)
+        profiles[profileIndex] = profile
+        root["profiles"] = profiles
+        try Self.writeKarabinerRoot(root)
+    }
+
+    private func mutateKarabinerGrabbedModifications(
+        groupID: String,
+        apply: (inout [RebindMapping]) -> Void
+    ) throws {
+        var root = try Self.loadKarabinerRoot()
+        var profiles = root["profiles"] as? [[String: Any]] ?? []
+        let profileIndex = Self.selectedKarabinerProfileIndex(in: profiles)
+        guard profiles.indices.contains(profileIndex) else { return }
+        var profile = profiles[profileIndex]
+
+        let scope = try Self.grabbedLayerScope(for: groupID, in: profile)
+        var mappings = Self.grabbedLayerMappingsByScope(from: profile)[scope.key] ?? []
+        apply(&mappings)
+
+        var complex = profile["complex_modifications"] as? [String: Any] ?? [:]
+        var rules = complex["rules"] as? [[String: Any]] ?? []
+        let ruleDescription = Self.grabbedLayerRuleDescription(for: scope.key)
+        rules.removeAll { ($0["description"] as? String) == ruleDescription }
+
+        if !mappings.isEmpty {
+            let simpleMappings = Self.simpleMappings(for: groupID, in: profile)
+            rules.append(Self.grabbedLayerRule(
+                description: ruleDescription,
+                mappings: mappings,
+                simpleMappings: simpleMappings,
+                deviceIdentifiers: scope.deviceIdentifiers
+            ))
+        }
+
+        complex["rules"] = rules
+        profile["complex_modifications"] = complex
         profiles[profileIndex] = profile
         root["profiles"] = profiles
         try Self.writeKarabinerRoot(root)
@@ -1103,6 +1284,154 @@ final class KeyRebinderController: ObservableObject {
     private static func deviceIndex(from groupID: String) -> Int? {
         guard let range = groupID.range(of: ":device:", options: .backwards) else { return nil }
         return Int(groupID[range.upperBound...])
+    }
+
+    private static func grabbedLayerRuleDescription(for scopeKey: String) -> String {
+        "\(grabbedLayerRulePrefix) \(scopeKey)"
+    }
+
+    private static func grabbedLayerScope(
+        for groupID: String,
+        in profile: [String: Any]
+    ) throws -> (key: String, deviceIdentifiers: [String: Any]?) {
+        if groupID.hasSuffix(":profile") {
+            return ("profile", nil)
+        }
+        guard let deviceIndex = deviceIndex(from: groupID),
+              let devices = profile["devices"] as? [[String: Any]],
+              devices.indices.contains(deviceIndex)
+        else {
+            throw NSError(domain: "KeyRebinder", code: 1, userInfo: [NSLocalizedDescriptionKey: "The selected remap scope no longer exists."])
+        }
+        let identifiers = devices[deviceIndex]["identifiers"] as? [String: Any] ?? [:]
+        return (layerScopeKey(for: identifiers), identifiers)
+    }
+
+    private static func simpleMappings(for groupID: String, in profile: [String: Any]) -> [RebindMapping] {
+        if groupID.hasSuffix(":profile") {
+            return mappings(from: profile["simple_modifications"] as? [[String: Any]] ?? [])
+        }
+        guard let deviceIndex = deviceIndex(from: groupID),
+              let devices = profile["devices"] as? [[String: Any]],
+              devices.indices.contains(deviceIndex)
+        else { return [] }
+        return mappings(from: devices[deviceIndex]["simple_modifications"] as? [[String: Any]] ?? [])
+    }
+
+    private static func grabbedLayerRule(
+        description: String,
+        mappings: [RebindMapping],
+        simpleMappings: [RebindMapping],
+        deviceIdentifiers: [String: Any]?
+    ) -> [String: Any] {
+        let manipulators = mappings.map { mapping in
+            let effectiveSource = simpleMappings.first { $0.from == mapping.from }?.to ?? mapping.from
+            var conditions: [[String: Any]] = [[
+                "type": "variable_if",
+                "name": grabbedLayerVariableName,
+                "value": true
+            ]]
+            if let deviceIdentifiers {
+                conditions.append([
+                    "type": "device_if",
+                    "identifiers": [deviceIdentifiers]
+                ])
+            }
+            return [
+                "type": "basic",
+                "description": grabbedLayerManipulatorDescription(for: mapping.from),
+                "from": complexFromObject(effectiveSource),
+                "to": [toObject(mapping.to)],
+                "conditions": conditions
+            ]
+        }
+        return [
+            "description": description,
+            "manipulators": manipulators
+        ]
+    }
+
+    private static func rebuildGrabbedLayerRule(for groupID: String, in profile: inout [String: Any]) throws {
+        let scope = try grabbedLayerScope(for: groupID, in: profile)
+        let mappings = grabbedLayerMappingsByScope(from: profile)[scope.key] ?? []
+        guard !mappings.isEmpty else { return }
+
+        var complex = profile["complex_modifications"] as? [String: Any] ?? [:]
+        var rules = complex["rules"] as? [[String: Any]] ?? []
+        let ruleDescription = grabbedLayerRuleDescription(for: scope.key)
+        rules.removeAll { ($0["description"] as? String) == ruleDescription }
+        rules.append(grabbedLayerRule(
+            description: ruleDescription,
+            mappings: mappings,
+            simpleMappings: simpleMappings(for: groupID, in: profile),
+            deviceIdentifiers: scope.deviceIdentifiers
+        ))
+        complex["rules"] = rules
+        profile["complex_modifications"] = complex
+    }
+
+    private static func grabbedLayerMappingsByScope(from profile: [String: Any]) -> [String: [RebindMapping]] {
+        let complex = profile["complex_modifications"] as? [String: Any] ?? [:]
+        let rules = complex["rules"] as? [[String: Any]] ?? []
+        return rules.reduce(into: [:]) { result, rule in
+            guard let description = rule["description"] as? String,
+                  description.hasPrefix(grabbedLayerRulePrefix)
+            else { return }
+            let scopeKey = description
+                .dropFirst(grabbedLayerRulePrefix.count)
+                .trimmingCharacters(in: .whitespaces)
+            guard !scopeKey.isEmpty else { return }
+            let manipulators = rule["manipulators"] as? [[String: Any]] ?? []
+            let mappings = manipulators.compactMap(grabbedLayerMapping(from:))
+            if !mappings.isEmpty {
+                result[scopeKey] = mappings
+            }
+        }
+    }
+
+    private static func grabbedLayerMapping(from manipulator: [String: Any]) -> RebindMapping? {
+        guard let toArray = manipulator["to"] as? [[String: Any]],
+              let to = endpoint(from: toArray.first)
+        else { return nil }
+        let originalSource = (manipulator["description"] as? String)
+            .flatMap(endpointFromGrabbedLayerManipulatorDescription)
+        let source = originalSource ?? endpoint(from: manipulator["from"] as? [String: Any])
+        guard let source else { return nil }
+        return RebindMapping(from: source, to: to)
+    }
+
+    private static func grabbedLayerManipulatorDescription(for endpoint: RebindEndpoint) -> String {
+        "source=\(endpoint.kind.rawValue):\(endpoint.code)"
+    }
+
+    private static func endpointFromGrabbedLayerManipulatorDescription(_ description: String) -> RebindEndpoint? {
+        guard description.hasPrefix("source=") else { return nil }
+        let value = description.dropFirst("source=".count)
+        guard let separator = value.firstIndex(of: ":") else { return nil }
+        let kindValue = String(value[..<separator])
+        let code = String(value[value.index(after: separator)...])
+        guard let kind = RebindEndpointKind(rawValue: kindValue) else { return nil }
+        switch kind {
+        case .keyboard:
+            return KeyRebinderLibrary.keyboard.first { $0.code == code } ?? RebindEndpoint(kind: kind, code: code, label: code)
+        case .mouse:
+            return KeyRebinderLibrary.mouse.first { $0.code == code } ?? RebindEndpoint(kind: kind, code: code, label: code)
+        }
+    }
+
+    private static func layerScopeKey(for identifiers: [String: Any]) -> String {
+        let keys = ["vendor_id", "product_id", "is_keyboard", "is_pointing_device"]
+        let parts = keys.compactMap { key -> String? in
+            guard let value = identifiers[key] else { return nil }
+            if let bool = value as? Bool { return "\(key)=\(bool)" }
+            if let number = value as? NSNumber {
+                if key.hasPrefix("is_") { return "\(key)=\(number.boolValue)" }
+                return "\(key)=\(number.intValue)"
+            }
+            if let string = value as? String { return "\(key)=\(string)" }
+            return nil
+        }
+        return "device:\(parts.joined(separator: ","))"
     }
 
     private static func simpleModification(from: RebindEndpoint, to: RebindEndpoint) -> [String: Any] {
@@ -1118,6 +1447,15 @@ final class KeyRebinderController: ObservableObject {
             return ["key_code": endpoint.code]
         case .mouse:
             return ["pointing_button": endpoint.code]
+        }
+    }
+
+    private static func complexFromObject(_ endpoint: RebindEndpoint) -> [String: Any] {
+        switch endpoint.kind {
+        case .keyboard:
+            return ["key_code": endpoint.code, "modifiers": ["optional": ["any"]]]
+        case .mouse:
+            return ["pointing_button": endpoint.code, "modifiers": ["optional": ["any"]]]
         }
     }
 
@@ -1484,10 +1822,61 @@ private extension String {
     }
 }
 
+private enum RebindLayerViewMode: String, Identifiable {
+    case normal
+    case rebinded
+    case ungrabbed
+    case grabbed
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .normal: "Normal"
+        case .rebinded: "Rebinded"
+        case .ungrabbed: "Ungrabbed"
+        case .grabbed: "Grabbed"
+        }
+    }
+    var sourceTitle: String {
+        switch self {
+        case .normal: "Normal Layout"
+        case .rebinded: "Rebinded Layout"
+        case .ungrabbed: "Ungrabbed Layout"
+        case .grabbed: "Grabbed Layout"
+        }
+    }
+    var sourceSubtitle: String {
+        switch self {
+        case .normal: "Original keyboard and mouse output."
+        case .rebinded: "Choose the key or mouse button to rebind."
+        case .ungrabbed: "Choose the key or mouse button for the ungrabbed layer."
+        case .grabbed: "Choose the key or mouse button for the cursor-grabbed layer."
+        }
+    }
+    var targetSubtitle: String {
+        switch self {
+        case .normal: "Normal layout is unchanged."
+        case .rebinded: "Choose the output for the selected control."
+        case .ungrabbed: "Choose the output while the cursor is not grabbed."
+        case .grabbed: "Choose the output while the cursor is grabbed."
+        }
+    }
+
+    var isEditable: Bool {
+        self != .normal
+    }
+
+    var editsGrabbedLayer: Bool {
+        self == .grabbed
+    }
+}
+
 struct KeyRebinderSettingsView: View {
     @ObservedObject var controller: KeyRebinderController
     @State private var targetKind: RebindEndpointKind = .keyboard
     @State private var visualSelectedSource: RebindEndpoint?
+    @State private var visualLayerMode: RebindLayerViewMode = .rebinded
+    @State private var showGrabbedLayerControls = false
     @State private var editingProfileName: String?
     @State private var editingProfileText = ""
     @FocusState private var focusedProfileName: String?
@@ -1816,21 +2205,40 @@ struct KeyRebinderSettingsView: View {
                         Spacer()
                         if let visualSelectedSource {
                             Button {
-                                if let index = group.mappings.firstIndex(where: { $0.from == visualSelectedSource }) {
+                                if !visualLayerMode.editsGrabbedLayer,
+                                   let index = group.mappings.firstIndex(where: { $0.from == visualSelectedSource }) {
                                     controller.deleteKarabinerSimpleModification(groupID: group.id, index: index)
+                                } else if visualLayerMode.editsGrabbedLayer {
+                                    controller.deleteKarabinerGrabbedModification(groupID: group.id, from: visualSelectedSource)
                                 }
                             } label: {
                                 Label("Clear Selected", systemImage: "xmark.circle")
                             }
                             .buttonStyle(.bordered)
-                            .disabled(group.mappings.contains(where: { $0.from == visualSelectedSource }) == false)
+                            .disabled(!visualLayerMode.isEditable || activeMappings(for: group).contains(where: { $0.from == visualSelectedSource }) == false)
                         }
                     }
 
+                    HStack(spacing: 12) {
+                        Picker("Layer", selection: $visualLayerMode) {
+                            ForEach(visibleLayerModes) { layer in
+                                Text(layer.title).tag(layer)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: showGrabbedLayerControls ? 420 : 320)
+
+                        Toggle("Advanced", isOn: Binding(
+                            get: { showGrabbedLayerControls },
+                            set: { setGrabbedLayerControlsVisible($0) }
+                        ))
+                        .toggleStyle(.switch)
+                    }
+
                     VisualRebindBoard(
-                        title: "Current Layout",
-                        subtitle: "Choose the key or mouse button to rebind.",
-                        mappings: group.mappings,
+                        title: visualLayerMode.sourceTitle,
+                        subtitle: visualLayerMode.sourceSubtitle,
+                        mappings: activeMappings(for: group),
                         selectedSource: visualSelectedSource,
                         enabledSources: sourceEndpoints(for: group),
                         enabledTargets: [],
@@ -1841,7 +2249,7 @@ struct KeyRebinderSettingsView: View {
 
                     VisualRebindBoard(
                         title: "Rebind Options",
-                        subtitle: "Choose the output for the selected control.",
+                        subtitle: visualLayerMode.targetSubtitle,
                         mappings: [],
                         selectedSource: nil,
                         enabledSources: [],
@@ -1849,10 +2257,15 @@ struct KeyRebinderSettingsView: View {
                         mode: .target
                     ) { endpoint in
                         guard let visualSelectedSource else { return }
-                        controller.setKarabinerSimpleModification(groupID: group.id, from: visualSelectedSource, to: endpoint)
+                        guard visualLayerMode.isEditable else { return }
+                        if visualLayerMode.editsGrabbedLayer {
+                            controller.setKarabinerGrabbedModification(groupID: group.id, from: visualSelectedSource, to: endpoint)
+                        } else {
+                            controller.setKarabinerSimpleModification(groupID: group.id, from: visualSelectedSource, to: endpoint)
+                        }
                     }
-                    .opacity(visualSelectedSource == nil ? 0.48 : 1)
-                    .disabled(visualSelectedSource == nil)
+                    .opacity(visualSelectedSource == nil || !visualLayerMode.isEditable ? 0.48 : 1)
+                    .disabled(visualSelectedSource == nil || !visualLayerMode.isEditable)
                 }
             } else {
                 Text("Select a remap scope.")
@@ -1863,9 +2276,42 @@ struct KeyRebinderSettingsView: View {
 
     private var visualInstruction: String {
         if let visualSelectedSource {
-            return "Selected \(visualSelectedSource.label.replacingOccurrences(of: "\n", with: " ")). Pick its output below."
+            if visualLayerMode.isEditable {
+                return "Selected \(visualSelectedSource.label.replacingOccurrences(of: "\n", with: " ")). Pick its \(visualLayerMode.title.lowercased()) output below."
+            }
+            return "Selected \(visualSelectedSource.label.replacingOccurrences(of: "\n", with: " "))."
         }
-        return "Pick a source on the top board, then pick its output on the bottom board."
+        if visualLayerMode.isEditable {
+            return "Pick a source on the top board, then pick its output on the bottom board."
+        }
+        return "Showing the unchanged keyboard and mouse layout."
+    }
+
+    private func activeMappings(for group: KarabinerSimpleModificationGroup) -> [RebindMapping] {
+        switch visualLayerMode {
+        case .normal:
+            return []
+        case .rebinded, .ungrabbed:
+            return group.mappings
+        case .grabbed:
+            return group.grabbedMappings
+        }
+    }
+
+    private var visibleLayerModes: [RebindLayerViewMode] {
+        showGrabbedLayerControls ? [.normal, .ungrabbed, .grabbed] : [.normal, .rebinded]
+    }
+
+    private func setGrabbedLayerControlsVisible(_ isVisible: Bool) {
+        showGrabbedLayerControls = isVisible
+        switch (isVisible, visualLayerMode) {
+        case (true, .rebinded):
+            visualLayerMode = .ungrabbed
+        case (false, .ungrabbed), (false, .grabbed):
+            visualLayerMode = .rebinded
+        default:
+            break
+        }
     }
 
     private func sourceEndpoints(for group: KarabinerSimpleModificationGroup) -> [RebindEndpoint] {
