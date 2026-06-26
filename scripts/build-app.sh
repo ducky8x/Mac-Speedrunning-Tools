@@ -46,6 +46,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <string>1.3.0</string>
   <key>CFBundleVersion</key>
   <string>1</string>
+  <key>SUFeedURL</key>
+  <string>https://raw.githubusercontent.com/ducky8x/Mac-Speedrunning-Tools/main/appcast.xml</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>NSHighResolutionCapable</key>

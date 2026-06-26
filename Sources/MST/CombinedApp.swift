@@ -7,6 +7,7 @@ import SwiftUI
 struct MSTApp: App {
     @NSApplicationDelegateAdaptor(CombinedAppDelegate.self) private var appDelegate
     @StateObject private var hub = ToolHub.shared
+    @StateObject private var autoUpdater = AutoUpdaterController.shared
 
     var body: some Scene {
         WindowGroup("MST") {
@@ -18,7 +19,7 @@ struct MSTApp: App {
         .windowStyle(.titleBar)
 
         Window("Settings", id: "mst-settings") {
-            MSTSettingsView(settings: hub.appSettings)
+            MSTSettingsView(settings: hub.appSettings, updater: autoUpdater)
                 .environmentObject(hub)
                 .preferredColorScheme(hub.appSettings.preferredColorScheme)
         }
@@ -33,11 +34,13 @@ struct MSTApp: App {
 @MainActor
 final class CombinedAppDelegate: NSObject, NSApplicationDelegate {
     private let hub = ToolHub.shared
+    private let autoUpdater = AutoUpdaterController.shared
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         _ = hub
+        autoUpdater.startAutomaticChecks()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -574,9 +577,10 @@ struct SetupAssistantSecondaryButtonStyle: ButtonStyle {
 }
 
 struct MSTSettingsView: View {
-    private static let contentSize = CGSize(width: 380, height: 244)
+    private static let contentSize = CGSize(width: 380, height: 280)
 
     @ObservedObject var settings: AppSettingsController
+    @ObservedObject var updater: AutoUpdaterController
     @Environment(\.colorScheme) private var systemColorScheme
 
     var body: some View {
@@ -626,6 +630,27 @@ struct MSTSettingsView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(PrimaryMonoButtonStyle(active: false))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Button {
+                            updater.checkForUpdates()
+                        } label: {
+                            Label("Check for updates", systemImage: "arrow.triangle.2.circlepath")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(PrimaryMonoButtonStyle(active: false))
+
+                        if updater.updateState == .checkingForUpdates {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+
+                    Text(updater.statusText)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Spacer(minLength: 10)
