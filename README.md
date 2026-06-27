@@ -133,5 +133,6 @@ Key Rebinder syncs Karabiner-Elements profiles and simple modifications from ins
 - Add, rename, enable, disable, and delete presets
 - Assign a global hotkey to each preset
 - Rebind keyboard keys and mouse buttons through a visual keyboard-and-mouse layout
+- Add cursor-grabbed layer outputs that activate while the cursor is hidden
 - Sync remaps back to Karabiner so the same rows appear in Karabiner-Elements
 - Show warnings for key-to-mouse-button remaps that cannot key repeat
