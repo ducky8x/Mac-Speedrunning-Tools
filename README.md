@@ -3,7 +3,7 @@
 MST combines BetterNBB, WindowBackdrop, Better Piechart, MACrosshair, and Key Rebinder into one app.
 
 Current version: 2.1.0
-MST 2.1.0 adds automatic updates. MST now checks for new releases on launch and shows an update banner in the sidebar when one is available. Clicking Update downloads and installs the new version automatically — MST restarts into the updated app without any manual steps.
+MST 2.1.0 adds automatic updates as well as options to rebind accents to keys. MST now checks for new releases on launch and shows an update banner in the sidebar when one is available. Clicking Update downloads and installs the new version automatically — MST restarts into the updated app without any manual steps.
 
 MST 2.0.0 added Key Rebinder with visual keyboard and mouse remapping through Karabiner Elements, per-preset hotkeys, light mode, a new settings window, and a new upgraded Better Piechart.
 
