@@ -1,9 +1,11 @@
-1# MST
+# MST
 
 MST combines BetterNBB, WindowBackdrop, Better Piechart, MACrosshair, and Key Rebinder into one app.
 
-Current version: 2.0.0
-MST 2.0.0 adds Key Rebinder with visual keyboard and mouse remapping through Karabiner Elements, per-preset hotkeys, light mode, a new settings window, and a new upgraded Better Piechart.
+Current version: 2.1.0
+MST 2.1.0 adds automatic updates. MST now checks for new releases on launch and shows an update banner in the sidebar when one is available. Clicking Update downloads and installs the new version automatically — MST restarts into the updated app without any manual steps.
+
+MST 2.0.0 added Key Rebinder with visual keyboard and mouse remapping through Karabiner Elements, per-preset hotkeys, light mode, a new settings window, and a new upgraded Better Piechart.
 
 ## Requirements
 
@@ -136,3 +138,12 @@ Key Rebinder syncs Karabiner-Elements profiles and simple modifications from ins
 - Add cursor-grabbed layer outputs that activate while the cursor is hidden
 - Sync remaps back to Karabiner so the same rows appear in Karabiner-Elements
 - Show warnings for key-to-mouse-button remaps that cannot key repeat
+
+### Auto Update
+
+MST can update itself automatically without leaving the app.
+
+- Checks for a new release on every launch
+- Shows an update banner in the sidebar when a newer version is available
+- Downloading and installing happens in the background
+- MST closes, replaces itself with the new version, and relaunches automatically
