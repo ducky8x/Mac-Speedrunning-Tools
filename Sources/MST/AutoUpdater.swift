@@ -1,8 +1,96 @@
 import AppKit
 import Foundation
+import SwiftUI
 
-private let githubOwner = "ducky8x"
-private let githubRepo = "Mac-Speedrunning-Tools"
+let githubOwner = "ducky8x"
+let githubRepo = "Mac-Speedrunning-Tools"
+
+// MARK: - Progress window
+
+private struct UpdateProgressView: View {
+    let fromVersion: String
+    let toVersion: String
+    @ObservedObject var updater: AutoUpdater
+
+    var statusText: String {
+        switch updater.updateState {
+        case .downloading: return "Downloading…"
+        case .installing:  return "Installing…"
+        default:           return ""
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Text("Updating MST")
+                .font(.system(size: 15, weight: .black))
+                .foregroundStyle(.white)
+
+            HStack(spacing: 8) {
+                Text("v\(fromVersion)")
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.55))
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.55))
+                Text("v\(toVersion)")
+                    .font(.system(size: 13, weight: .black, design: .monospaced))
+                    .foregroundStyle(.white)
+            }
+
+            ProgressView()
+                .progressViewStyle(.linear)
+                .tint(.white)
+                .frame(width: 220)
+
+            Text(statusText)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.6))
+        }
+        .padding(.vertical, 28)
+        .padding(.horizontal, 32)
+        .frame(width: 300)
+        .background(Color.black)
+    }
+}
+
+@MainActor
+private final class UpdateProgressWindowController {
+    private var window: NSPanel?
+
+    func open(from fromVersion: String, to toVersion: String, updater: AutoUpdater) {
+        guard window == nil else { return }
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 160),
+            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "Updating MST"
+        panel.titlebarAppearsTransparent = true
+        panel.titleVisibility = .hidden
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.isMovableByWindowBackground = true
+        panel.backgroundColor = .black
+        panel.appearance = NSAppearance(named: .darkAqua)
+        panel.styleMask.remove(.resizable)
+
+        let view = UpdateProgressView(fromVersion: fromVersion, toVersion: toVersion, updater: updater)
+        panel.contentView = NSHostingView(rootView: view)
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        self.window = panel
+    }
+
+    func close() {
+        window?.close()
+        window = nil
+    }
+}
+
+// MARK: - AutoUpdater
 
 @MainActor
 final class AutoUpdater: ObservableObject {
@@ -25,13 +113,24 @@ final class AutoUpdater: ObservableObject {
 
     @Published var updateState: UpdateState = .idle
 
+    private let session: URLSession
+    let currentVersion: String
+    private let progressWindow = UpdateProgressWindowController()
+
+    init(session: URLSession = .shared, currentVersion: String? = nil) {
+        self.session = session
+        self.currentVersion = currentVersion
+            ?? Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+            ?? "0.0.0"
+    }
+
     func checkOnLaunch() {
         Task { await check() }
     }
 
     func startUpdate() {
-        guard case .available(_, let url) = updateState else { return }
-        Task { await downloadAndInstall(from: url) }
+        guard case .available(let version, let url) = updateState else { return }
+        Task { await downloadAndInstall(from: url, newVersion: version) }
     }
 
     func retry() {
@@ -40,17 +139,16 @@ final class AutoUpdater: ObservableObject {
 
     // MARK: - Check
 
-    private func check() async {
+    func check() async {
         updateState = .checking
 
-        let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
         let apiURL = URL(string: "https://api.github.com/repos/\(githubOwner)/\(githubRepo)/releases/latest")!
         var req = URLRequest(url: apiURL)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
         req.timeoutInterval = 10
 
-        guard let (data, response) = try? await URLSession.shared.data(for: req),
+        guard let (data, response) = try? await session.data(for: req),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tag = json["tag_name"] as? String,
@@ -60,8 +158,16 @@ final class AutoUpdater: ObservableObject {
             return
         }
 
-        let remote = tag.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
-        guard isNewer(remote, than: current) else {
+        // Extract X.Y.Z from tags like "MST-v2.0.0", "v2.0.0", "2.0.0"
+        let remote: String
+        if let range = tag.range(of: #"\d+\.\d+(?:\.\d+)*"#, options: .regularExpression) {
+            remote = String(tag[range])
+        } else {
+            updateState = .idle
+            return
+        }
+
+        guard isNewer(remote, than: currentVersion) else {
             updateState = .upToDate
             return
         }
@@ -69,6 +175,7 @@ final class AutoUpdater: ObservableObject {
         let asset = assets.first { a in
             guard let name = a["name"] as? String else { return false }
             let lower = name.lowercased()
+            guard !lower.contains(".dmg") else { return false }
             return lower.hasSuffix(".zip") && (lower.contains("macos") || lower == "mst.zip")
         }
 
@@ -85,10 +192,12 @@ final class AutoUpdater: ObservableObject {
 
     // MARK: - Download & Install
 
-    private func downloadAndInstall(from url: URL) async {
+    private func downloadAndInstall(from url: URL, newVersion: String) async {
         updateState = .downloading(progress: nil)
+        progressWindow.open(from: currentVersion, to: newVersion, updater: self)
 
-        guard let (tmpFile, _) = try? await URLSession.shared.download(from: url) else {
+        guard let (tmpFile, _) = try? await session.download(from: url) else {
+            progressWindow.close()
             updateState = .failed("Download failed. Check your internet connection.")
             return
         }
@@ -129,13 +238,14 @@ final class AutoUpdater: ObservableObject {
 
             NSApp.terminate(nil)
         } catch {
+            progressWindow.close()
             updateState = .failed(error.localizedDescription)
         }
     }
 
     // MARK: - Helpers
 
-    private func findApp(in dir: URL) throws -> URL {
+    func findApp(in dir: URL) throws -> URL {
         func search(in url: URL, depth: Int) -> URL? {
             guard depth >= 0,
                   let items = try? FileManager.default.contentsOfDirectory(
@@ -161,26 +271,24 @@ final class AutoUpdater: ObservableObject {
     }
 
     private func swapScript(staged: String, target: String) -> String {
-        """
+        // If target is an .app bundle, open it directly.
+        // If not (e.g. swift run binary), open the staged app from its temp location as a fallback.
+        let launchTarget = target.hasSuffix(".app") ? target : staged
+        return """
         #!/bin/bash
         set -e
-        # Wait for MST to fully exit
         while pgrep -xq "MST" 2>/dev/null; do sleep 0.2; done
         sleep 0.3
-        # Replace the app bundle
         rm -rf '\(target)'
         cp -R '\(staged)' '\(target)'
-        # Clear quarantine so macOS doesn't block the new binary
         xattr -cr '\(target)' 2>/dev/null || true
-        # Relaunch
-        open '\(target)'
-        # Clean up
+        open '\(launchTarget)'
         rm -rf '\(staged)'
         rm -- "$0"
         """
     }
 
-    private func isNewer(_ remote: String, than current: String) -> Bool {
+    func isNewer(_ remote: String, than current: String) -> Bool {
         let r = remote.split(separator: ".").compactMap { Int($0) }
         let c = current.split(separator: ".").compactMap { Int($0) }
         let n = max(r.count, c.count)

@@ -14,6 +14,11 @@ let package = Package(
         .executableTarget(
             name: "MST",
             path: "Sources/MST"
+        ),
+        .testTarget(
+            name: "MSTTests",
+            dependencies: ["MST"],
+            path: "Tests/MSTTests"
         )
     ]
 )
